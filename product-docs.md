@@ -42,9 +42,142 @@ CDI (Containerized Data Importer) is a persistent storage management add-on for 
 
 ### How KubeVirt and CDI Work Together
 
+#### Advanced Workflow Diagram
+
 ```mermaid
-VM Creation Flow:
-User → DataVolume → CDI Controller → PVC → Storage → VM
+graph TB
+    %% User Layer
+    User[👤 User/Developer]
+    CLI[🖥️ kubectl/virtctl]
+
+    %% API Layer
+    K8sAPI[🔄 Kubernetes API Server]
+
+    %% CDI Components
+    CDICtrl[📦 CDI Controller]
+    CDIUpload[📤 CDI Upload Proxy]
+    ImportPod[🔄 Importer Pod]
+
+    %% KubeVirt Components
+    VirtCtrl[🎮 Virt Controller]
+    VirtHandler[🔧 Virt Handler]
+    VirtLauncher[🚀 Virt Launcher Pod]
+
+    %% Storage Layer
+    DV[📁 DataVolume]
+    PVC[💾 PersistentVolumeClaim]
+    PV[🗄️ PersistentVolume]
+    StorageBackend[💿 Storage Backend<br/>Ceph/NFS/Cloud]
+
+    %% VM Resources
+    VM[🖥️ VirtualMachine]
+    VMI[⚡ VirtualMachineInstance]
+    VMPod[📦 VM Pod]
+
+    %% External Sources
+    Registry[🐳 Container Registry]
+    HTTP[🌐 HTTP/S3 Source]
+    Upload[📤 Upload Source]
+
+    %% Networking
+    Service[🌐 Kubernetes Service]
+    Ingress[🔀 Ingress/LoadBalancer]
+
+    %% Workflow Steps
+    User -->|1. Creates DataVolume| CLI
+    CLI -->|2. Submit YAML| K8sAPI
+    K8sAPI -->|3. Reconcile DV| CDICtrl
+
+    %% Image Import Flow
+    CDICtrl -->|4a. HTTP/Registry Import| ImportPod
+    CDICtrl -->|4b. Upload| CDIUpload
+    Registry -.->|Image Data| ImportPod
+    HTTP -.->|Image Data| ImportPod
+    Upload -.->|Local Data| CDIUpload
+
+    %% Storage Provisioning
+    CDICtrl -->|5. Create PVC| PVC
+    PVC -->|6. Bind to PV| PV
+    PV -.->|7. Backend Storage| StorageBackend
+    ImportPod -->|8. Write Image| PV
+
+    %% VM Creation Flow
+    User -->|9. Creates VM| CLI
+    CLI -->|10. Submit VM YAML| K8sAPI
+    K8sAPI -->|11. Reconcile VM| VirtCtrl
+    VirtCtrl -->|12. Create VMI| VMI
+    VMI -->|13. Schedule Pod| VirtHandler
+    VirtHandler -->|14. Create Launcher| VirtLauncher
+
+    %% Disk Attachment
+    VirtLauncher -.->|15. Mount PVC| PVC
+    PVC -.->|Disk Access| VirtLauncher
+
+    %% VM Runtime
+    VirtLauncher -->|16. Spawn QEMU/KVM| VMPod
+    VMPod -.->|17. VM Network| Service
+    Service -.->|18. External Access| Ingress
+
+    %% Monitoring & Management
+    VirtHandler -.->|Monitor| VMPod
+    VirtCtrl -.->|Lifecycle Mgmt| VMI
+
+    %% Status Updates
+    CDICtrl -.->|DV Status| DV
+    VirtCtrl -.->|VM Status| VM
+    VirtHandler -.->|VMI Status| VMI
+
+    %% Color Coding
+    classDef userLayer fill:#e1f5fe
+    classDef controlPlane fill:#f3e5f5
+    classDef storage fill:#e8f5e8
+    classDef vm fill:#fff3e0
+    classDef external fill:#fce4ec
+    classDef network fill:#e3f2fd
+
+    class User,CLI userLayer
+    class K8sAPI,CDICtrl,VirtCtrl,VirtHandler controlPlane
+    class DV,PVC,PV,StorageBackend,ImportPod,CDIUpload storage
+    class VM,VMI,VirtLauncher,VMPod vm
+    class Registry,HTTP,Upload external
+    class Service,Ingress network
+```
+
+#### Component Interaction Details
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant K8s as Kubernetes API
+    participant CDI as CDI Controller
+    participant Import as Importer Pod
+    participant Storage
+    participant KubeVirt as KubeVirt Controller
+    participant Handler as Virt Handler
+    participant Launcher as Virt Launcher
+
+    Note over User,Launcher: Phase 1: Image Import & Storage Preparation
+
+    User->>K8s: 1. Create DataVolume
+    K8s->>CDI: 2. Reconcile DataVolume
+    CDI->>K8s: 3. Create PVC
+    CDI->>Import: 4. Create Importer Pod
+    Import->>Storage: 5. Download & Write Image
+    Import->>CDI: 6. Report Success
+    CDI->>K8s: 7. Mark DataVolume Ready
+
+    Note over User,Launcher: Phase 2: VM Creation & Startup
+
+    User->>K8s: 8. Create VirtualMachine
+    K8s->>KubeVirt: 9. Reconcile VM
+    KubeVirt->>K8s: 10. Create VMI
+    K8s->>Handler: 11. Schedule VMI
+    Handler->>Launcher: 12. Create Launcher Pod
+    Launcher->>Storage: 13. Mount PVC as VM Disk
+    Launcher->>Launcher: 14. Start QEMU/KVM Process
+    Launcher->>Handler: 15. Report VM Running
+    Handler->>KubeVirt: 16. Update VMI Status
+    KubeVirt->>K8s: 17. Update VM Status
 ```
 
 CDI creates and populates persistent volumes that KubeVirt VMs use as disks, enabling:
