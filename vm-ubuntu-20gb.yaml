@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vm-ubuntu-20gb
+  namespace: default
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: vm-20gb
+  namespace: default
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: vm-20gb
+    spec:
+      domain:
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: datadisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: "2"
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: registry.access.redhat.com/ubi8/ubi:latest
+      - name: datadisk
+        persistentVolumeClaim:
+          claimName: vm-ubuntu-20gb
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            users:
+              - name: ubuntu
+                sudo: ALL=(ALL) NOPASSWD:ALL
+                shell: /bin/bash
+                passwd: $6$rounds=4096$saltsalt$L9ubbgJqJeOr8w4xKvbwdB1EqaKL8E8vlW8Y0Qo1JqwH1J6GkQ8C2zE1ZJQ2sD7L9O1J5Q3K8L2E6F4C9B1A2
+            ssh_pwauth: true
+            packages:
+              - openssh-server
+            runcmd:
+              - systemctl enable ssh
+              - systemctl start ssh
+              - mkfs.ext4 /dev/vdb
+              - mkdir -p /data
+              - mount /dev/vdb /data
+              - echo "/dev/vdb /data ext4 defaults 0 0" >> /etc/fstab

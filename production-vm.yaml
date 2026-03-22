@@ -1,0 +1,136 @@
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: ubuntu-persistent-20gb
+  namespace: default
+spec:
+  pvc:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: 20Gi
+    storageClassName: csi-rbd-sc
+  source:
+    registry:
+      url: docker://quay.io/containerdisks/ubuntu:22.04
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: production-vm
+  namespace: default
+  labels:
+    app: production-vm
+    environment: production
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: production-vm
+        app: production-vm
+    spec:
+      domain:
+        cpu:
+          cores: 1
+          sockets: 1
+          threads: 1
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+          networkInterfaceMultiqueue: true
+        machine:
+          type: q35
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: "1"
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: rootdisk
+        dataVolume:
+          name: ubuntu-persistent-20gb
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: production-vm
+            users:
+              - name: ubuntu
+                sudo: ALL=(ALL) NOPASSWD:ALL
+                shell: /bin/bash
+                lock_passwd: false
+                plain_text_passwd: ubuntu
+                groups: [sudo, docker]
+            ssh_pwauth: true
+            packages:
+              - openssh-server
+              - ca-certificates
+              - curl
+              - gnupg
+              - lsb-release
+              - cloud-guest-utils
+            write_files:
+              - path: /etc/docker/daemon.json
+                content: |
+                  {
+                    "storage-driver": "overlay2",
+                    "log-driver": "json-file",
+                    "log-opts": {
+                      "max-size": "10m",
+                      "max-file": "3"
+                    },
+                    "data-root": "/var/lib/docker"
+                  }
+                permissions: '0644'
+                owner: root:root
+              - path: /home/ubuntu/setup-docker.sh
+                content: |
+                  #!/bin/bash
+                  # Install Docker
+                  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+                  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+                  sudo apt update
+                  sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+                  sudo systemctl enable docker
+                  sudo systemctl start docker
+                  sudo usermod -aG docker ubuntu
+                  echo "Docker installed successfully" > /var/log/docker-install.log
+                permissions: '0755'
+                owner: ubuntu:ubuntu
+            runcmd:
+              - systemctl enable ssh
+              - systemctl start ssh
+              - mkdir -p /etc/apt/keyrings
+              - su - ubuntu -c "/home/ubuntu/setup-docker.sh"
+              - growpart /dev/vda 1
+              - resize2fs /dev/vda1
+              - echo "VM setup completed at $(date)" > /var/log/vm-setup.log
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: production-vm-ssh
+  namespace: default
+  labels:
+    app: production-vm
+spec:
+  type: LoadBalancer
+  ports:
+  - name: ssh
+    port: 22
+    targetPort: 22
+    protocol: TCP
+  selector:
+    kubevirt.io/domain: production-vm

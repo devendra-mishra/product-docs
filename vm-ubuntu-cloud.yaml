@@ -1,0 +1,59 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: vm-20gb
+  namespace: default
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: vm-20gb
+    spec:
+      domain:
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: "2"
+        machine:
+          type: q35
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: rootdisk
+        emptyDisk:
+          capacity: 20Gi
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            users:
+              - name: ubuntu
+                sudo: ALL=(ALL) NOPASSWD:ALL
+                shell: /bin/bash
+                lock_passwd: false
+                plain_text_passwd: ubuntu
+            ssh_pwauth: true
+            packages:
+              - openssh-server
+            runcmd:
+              - systemctl enable ssh
+              - systemctl start ssh
+              - echo "VM setup completed" > /var/log/vm-setup.log
+          networkData: |
+            version: 2
+            ethernets:
+              eth0:
+                dhcp4: true

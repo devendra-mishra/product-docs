@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ubuntu-disk-20gb
+  namespace: default
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: vm-20gb
+  namespace: default
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: vm-20gb
+    spec:
+      domain:
+        devices:
+          disks:
+          - name: ubuntu-boot
+            disk:
+              bus: virtio
+          - name: root-disk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: "2"
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: ubuntu-boot
+        containerDisk:
+          image: quay.io/containerdisks/ubuntu:22.04
+      - name: root-disk
+        persistentVolumeClaim:
+          claimName: ubuntu-disk-20gb
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            users:
+              - name: ubuntu
+                sudo: ALL=(ALL) NOPASSWD:ALL
+                shell: /bin/bash
+                lock_passwd: false
+                plain_text_passwd: ubuntu
+            ssh_pwauth: true
+            packages:
+              - openssh-server
+            write_files:
+              - path: /home/ubuntu/docker-setup.sh
+                content: |
+                  #!/bin/bash
+                  echo "Setting up Docker with data directory on /mnt/storage..."
+                  sudo apt update -y
+                  sudo apt install -y ca-certificates curl gnupg lsb-release
+                  sudo mkdir -p /etc/apt/keyrings
+                  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+                  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+                  sudo apt update -y
+                  sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+                  sudo systemctl stop docker
+                  sudo mkdir -p /mnt/storage/docker
+                  sudo mkdir -p /etc/docker
+                  sudo tee /etc/docker/daemon.json <<EOF
+                  {
+                    "data-root": "/mnt/storage/docker",
+                    "storage-driver": "overlay2",
+                    "log-driver": "json-file",
+                    "log-opts": {
+                      "max-size": "10m",
+                      "max-file": "3"
+                    }
+                  }
+                  EOF
+                  sudo usermod -aG docker ubuntu
+                  sudo systemctl start docker
+                  sudo systemctl enable docker
+                  echo "Docker setup completed!" > /var/log/docker-setup.log
+                permissions: '0755'
+                owner: ubuntu:ubuntu
+            runcmd:
+              - systemctl enable ssh
+              - systemctl start ssh
+              - mkfs.ext4 /dev/vdb
+              - mkdir -p /mnt/storage
+              - mount /dev/vdb /mnt/storage
+              - echo "/dev/vdb /mnt/storage ext4 defaults 0 0" >> /etc/fstab
+              - echo "20GB disk mounted at /mnt/storage" > /var/log/disk-setup.log
+              - su - ubuntu -c "/home/ubuntu/docker-setup.sh"
